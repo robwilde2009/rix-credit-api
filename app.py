@@ -157,9 +157,7 @@ def extract_accounts_financials_from_text(text):
     if not text:
         return {}
 
-    # Limit text size to reduce risk of hanging on large filings
     text = text[:50000]
-
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     def find_value(patterns):
@@ -174,50 +172,102 @@ def extract_accounts_financials_from_text(text):
         return None
 
     return {
-        "tangible_assets": find_value([
+        "fixed_assets": find_value([
             r"Fixed assets\s+([\d,.\-\(\)]+)",
+            r"Total fixed assets\s+([\d,.\-\(\)]+)",
             r"Tangible assets\s+([\d,.\-\(\)]+)"
         ]),
         "debtors": find_value([
-            r"Debtors\s+([\d,.\-\(\)]+)"
+            r"Debtors\s+([\d,.\-\(\)]+)",
+            r"Trade debtors\s+([\d,.\-\(\)]+)"
         ]),
         "cash": find_value([
-            r"Cash.*([\d,.\-\(\)]+)"
+            r"Cash at bank and in hand\s+([\d,.\-\(\)]+)",
+            r"Cash at bank\s+([\d,.\-\(\)]+)",
+            r"Cash\s+([\d,.\-\(\)]+)"
         ]),
-        "total_current_assets": find_value([
-            r"Current assets\s+([\d,.\-\(\)]+)"
+        "current_assets": find_value([
+            r"Current assets\s+([\d,.\-\(\)]+)",
+            r"Total current assets\s+([\d,.\-\(\)]+)"
         ]),
-        "total_current_liabilities": find_value([
+        "current_liabilities": find_value([
+            r"Creditors[: ]+amounts falling due within one year\s+([\d,.\-\(\)]+)",
             r"Creditors.*within one year\s+([\d,.\-\(\)]+)",
-            r"Current liabilities\s+([\d,.\-\(\)]+)"
+            r"Current liabilities\s+([\d,.\-\(\)]+)",
+            r"Total current liabilities\s+([\d,.\-\(\)]+)"
         ]),
-        "total_net_assets": find_value([
-            r"Net assets\s+([\d,.\-\(\)]+)"
+        "net_assets": find_value([
+            r"Net assets\s+([\d,.\-\(\)]+)",
+            r"Total net assets\s+([\d,.\-\(\)]+)"
         ]),
         "shareholders_funds": find_value([
-            r"Shareholders'? funds\s+([\d,.\-\(\)]+)"
+            r"Shareholders'? funds\s+([\d,.\-\(\)]+)",
+            r"Total shareholders'? funds\s+([\d,.\-\(\)]+)"
+        ]),
+        "working_capital": find_value([
+            r"Working capital\s+([\d,.\-\(\)]+)"
+        ]),
+        "long_term_liabilities": find_value([
+            r"Creditors[: ]+amounts falling due after more than one year\s+([\d,.\-\(\)]+)",
+            r"Creditors.*after more than one year\s+([\d,.\-\(\)]+)",
+            r"Long term liabilities\s+([\d,.\-\(\)]+)",
+            r"Total long term liabilities\s+([\d,.\-\(\)]+)"
+        ]),
+        "current_ratio": find_value([
+            r"Current ratio\s+([\d,.\-\(\)]+)"
+        ]),
+        "acid_test": find_value([
+            r"Acid test\s+([\d,.\-\(\)]+)"
+        ]),
+        "borrowing_ratio": find_value([
+            r"Borrowing ratio %\s+([\d,.\-\(\)]+)"
+        ]),
+        "equity_gearing": find_value([
+            r"Equity gearing %\s+([\d,.\-\(\)]+)"
+        ]),
+        "debt_gearing": find_value([
+            r"Debt gearing %\s+([\d,.\-\(\)]+)"
+        ]),
+        "depreciation": find_value([
+            r"Depreciation charges\s+([\d,.\-\(\)]+)"
+        ]),
+        "employees": find_value([
+            r"Number of employees\s+([\d,.\-\(\)]+)",
+            r"employees\s+([\d,.\-\(\)]+)"
         ])
     }
 
 
-def get_recent_accounts_financials(company_number, limit=3):
-    accounts = get_recent_accounts_text(company_number, limit=limit)
-    results = []
+def get_latest_accounts_metadata(company_number):
+    accounts = get_recent_accounts_metadata(company_number, limit=1)
+    if not accounts:
+        return None
+    return accounts[0]
 
-    for account in accounts:
-        text = account.get("text")
-        extracted = extract_accounts_financials_from_text(text) if text else {}
 
-        results.append({
-            "made_up_to": account.get("made_up_to"),
-            "filing_date": account.get("filing_date"),
-            "content_type_used": account.get("content_type_used"),
-            "document_metadata_url": account.get("document_metadata_url"),
-            "document_content_url": account.get("document_content_url"),
-            **extracted
-        })
+def get_latest_accounts_text(company_number):
+    accounts = get_recent_accounts_text(company_number, limit=1)
+    if not accounts:
+        return None
+    return accounts[0]
 
-    return results
+
+def get_latest_accounts_financials(company_number):
+    account = get_latest_accounts_text(company_number)
+    if not account:
+        return None
+
+    text = account.get("text")
+    extracted = extract_accounts_financials_from_text(text) if text else {}
+
+    return {
+        "made_up_to": account.get("made_up_to"),
+        "filing_date": account.get("filing_date"),
+        "content_type_used": account.get("content_type_used"),
+        "document_metadata_url": account.get("document_metadata_url"),
+        "document_content_url": account.get("document_content_url"),
+        **extracted
+    }
 
 
 @app.route("/")
@@ -263,10 +313,10 @@ def recent_accounts_text(company_number):
         return {"error": str(e)}, 500
 
 
-@app.route("/rix-credit/company/<company_number>/recent-accounts-financials")
-def recent_accounts_financials(company_number):
+@app.route("/rix-credit/company/<company_number>/latest-accounts-financials")
+def latest_accounts_financials(company_number):
     try:
-        data = get_recent_accounts_financials(company_number, limit=3)
-        return jsonify({"recent_accounts_financials": data})
+        data = get_latest_accounts_financials(company_number)
+        return jsonify({"latest_accounts_financials": data})
     except Exception as e:
         return {"error": str(e)}, 500
