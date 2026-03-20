@@ -138,7 +138,6 @@ def get_recent_accounts_text(company_number, limit=3):
             content_type_used = "application/xml"
 
         elif "application/pdf" in resources:
-            # Keep the URL but do not OCR PDFs here
             text_content = None
             content_type_used = "application/pdf"
 
@@ -159,34 +158,97 @@ def extract_accounts_financials_from_text(text):
         return {}
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    joined = "\n".join(lines)
 
-    def find_first(pattern):
-        match = re.search(pattern, joined, flags=re.IGNORECASE)
-        return match.group(1) if match else None
+    def find_value(patterns):
+        for pattern in patterns:
+            for line in lines:
+                match = re.search(pattern, line, flags=re.IGNORECASE)
+                if match:
+                    return parse_number(match.group(1))
+        return None
 
     return {
-        "tangible_assets": parse_number(find_first(r"Tangible Assets\s+([\d,.\-\(\)]+)")),
-        "total_fixed_assets": parse_number(find_first(r"Total Fixed/Non-Current Assets\s+([\d,.\-\(\)]+)")),
-        "debtors": parse_number(find_first(r"Debtors\s+([\d,.\-\(\)]+)")),
-        "trade_debtors": parse_number(find_first(r"Trade Debtors\s+([\d,.\-\(\)]+)")),
-        "cash": parse_number(find_first(r"Cash At Bank\s+([\d,.\-\(\)]+)")),
-        "total_current_assets": parse_number(find_first(r"Total Current Assets\s+([\d,.\-\(\)]+)")),
-        "total_current_liabilities": parse_number(find_first(r"Total Current Liabilities\s+([\d,.\-\(\)]+)")),
-        "working_capital": parse_number(find_first(r"Working Capital\s+([\d,.\-\(\)]+)")),
-        "capital_employed": parse_number(find_first(r"Capital Employed\s+([\d,.\-\(\)]+)")),
-        "total_long_term_liabilities": parse_number(find_first(r"Total Long Term Liabilities\s+([\d,.\-\(\)]+)")),
-        "total_provisions": parse_number(find_first(r"Total Provisions\s+([\d,.\-\(\)]+)")),
-        "total_net_assets": parse_number(find_first(r"Total Net Assets\s+([\d,.\-\(\)]+)")),
-        "shareholders_funds": parse_number(find_first(r"Total Shareholders'? Funds\s+([\d,.\-\(\)]+)")),
-        "net_worth": parse_number(find_first(r"Net Worth\s+([\d,.\-\(\)]+)")),
-        "current_ratio": parse_number(find_first(r"Current Ratio\s+([\d,.\-\(\)]+)")),
-        "acid_test": parse_number(find_first(r"Acid Test\s+([\d,.\-\(\)]+)")),
-        "borrowing_ratio": parse_number(find_first(r"Borrowing Ratio %\s+([\d,.\-\(\)]+)")),
-        "equity_gearing": parse_number(find_first(r"Equity Gearing %\s+([\d,.\-\(\)]+)")),
-        "debt_gearing": parse_number(find_first(r"Debt Gearing %\s+([\d,.\-\(\)]+)")),
-        "depreciation": parse_number(find_first(r"Depreciation Charges\s+([\d,.\-\(\)]+)")),
-        "employees": parse_number(find_first(r"Number Of Employees\s+([\d,.\-\(\)]+)"))
+        "tangible_assets": find_value([
+            r"Fixed assets\s+([\d,.\-\(\)]+)",
+            r"Tangible assets\s+([\d,.\-\(\)]+)",
+            r"Property.*equipment\s+([\d,.\-\(\)]+)",
+            r"Property, plant and equipment\s+([\d,.\-\(\)]+)",
+            r"Total fixed assets\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "debtors": find_value([
+            r"Debtors\s+([\d,.\-\(\)]+)",
+            r"Trade debtors\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "cash": find_value([
+            r"Cash at bank\s+([\d,.\-\(\)]+)",
+            r"Cash at bank and in hand\s+([\d,.\-\(\)]+)",
+            r"Cash\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "total_current_assets": find_value([
+            r"Current assets\s+([\d,.\-\(\)]+)",
+            r"Total current assets\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "total_current_liabilities": find_value([
+            r"Creditors[: ]+amounts falling due within one year\s+([\d,.\-\(\)]+)",
+            r"Creditors.*within one year\s+([\d,.\-\(\)]+)",
+            r"Current liabilities\s+([\d,.\-\(\)]+)",
+            r"Total current liabilities\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "working_capital": find_value([
+            r"Working capital\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "total_net_assets": find_value([
+            r"Net assets\s+([\d,.\-\(\)]+)",
+            r"Total net assets\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "shareholders_funds": find_value([
+            r"Total shareholders'? funds\s+([\d,.\-\(\)]+)",
+            r"Shareholders'? funds\s+([\d,.\-\(\)]+)",
+            r"Equity\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "total_long_term_liabilities": find_value([
+            r"Creditors[: ]+amounts falling due after more than one year\s+([\d,.\-\(\)]+)",
+            r"Creditors.*after more than one year\s+([\d,.\-\(\)]+)",
+            r"Long term liabilities\s+([\d,.\-\(\)]+)",
+            r"Total long term liabilities\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "current_ratio": find_value([
+            r"Current ratio\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "acid_test": find_value([
+            r"Acid test\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "borrowing_ratio": find_value([
+            r"Borrowing ratio %\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "equity_gearing": find_value([
+            r"Equity gearing %\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "debt_gearing": find_value([
+            r"Debt gearing %\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "depreciation": find_value([
+            r"Depreciation charges\s+([\d,.\-\(\)]+)"
+        ]),
+
+        "employees": find_value([
+            r"Number of employees\s+([\d,.\-\(\)]+)",
+            r"employees\s+([\d,.\-\(\)]+)"
+        ])
     }
 
 
