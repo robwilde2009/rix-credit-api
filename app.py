@@ -3,8 +3,6 @@ import requests
 from requests.auth import HTTPBasicAuth
 import os
 import re
-import io
-import pdfplumber
 
 app = Flask(__name__)
 
@@ -12,355 +10,43 @@ CH_API_KEY = os.environ.get("CH_API_KEY")
 BASE_URL = "https://api.company-information.service.gov.uk"
 
 
-def ch_get_json(url_or_path):
-    url = url_or_path if url_or_path.startswith("http") else BASE_URL + url_or_path
-    r = requests.get(
-        url,
-        auth=HTTPBasicAuth(CH_API_KEY, ""),
-        timeout=30
-    )
+def ch_get_json(path):
+    url = BASE_URL + path
+    r = requests.get(url, auth=HTTPBasicAuth(CH_API_KEY, ""), timeout=20)
     r.raise_for_status()
     return r.json()
 
 
-def ch_get_text(url, accept=None):
-    headers = {}
-    if accept:
-        headers["Accept"] = accept
-
-    r = requests.get(
-        url,
-        auth=HTTPBasicAuth(CH_API_KEY, ""),
-        headers=headers,
-        timeout=45,
-        allow_redirects=True
-    )
-    r.raise_for_status()
-    return r.text
-
-
-def ch_get_bytes(url, accept=None):
-    headers = {}
-    if accept:
-        headers["Accept"] = accept
-
-    r = requests.get(
-        url,
-        auth=HTTPBasicAuth(CH_API_KEY, ""),
-        headers=headers,
-        timeout=60,
-        allow_redirects=True
-    )
-    r.raise_for_status()
-    return r.content
-
-
-def clean_xhtml_to_text(xhtml):
-    text = re.sub(r"<script.*?</script>", " ", xhtml, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<style.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</div>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</tr>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</td>", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"&nbsp;", " ", text)
-    text = re.sub(r"&amp;", "&", text)
-    text = re.sub(r"&lt;", "<", text)
-    text = re.sub(r"&gt;", ">", text)
-    text = re.sub(r"\r", " ", text)
-    text = re.sub(r"\n\s*\n+", "\n\n", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    return text.strip()
-
-
-def clean_pdf_text(text):
-    text = text.replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n+", "\n\n", text)
-    return text.strip()
-
-
-def extract_text_from_pdf_bytes(pdf_bytes, max_pages=12):
-    texts = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages[:max_pages]:
-            page_text = page.extract_text()
-            if page_text:
-                texts.append(page_text)
-    return clean_pdf_text("\n\n".join(texts))
-
-
 def parse_number(value):
-    if value is None:
+    if not value:
         return None
-
-    value = str(value).strip()
-    if value in ["", "-", "—"]:
-        return None
-
-    negative = False
-    if value.startswith("(") and value.endswith(")"):
-        negative = True
-        value = value[1:-1]
-
-    value = value.replace(",", "").replace("£", "").strip()
-
+    value = str(value).replace(",", "").replace("£", "").strip()
     try:
-        if "." in value:
-            num = float(value)
-        else:
-            num = int(value)
-        return -num if negative else num
-    except Exception:
+        return float(value)
+    except:
         return None
 
 
-def safe_div(a, b):
-    if a is None or b in [None, 0]:
-        return None
-    try:
-        return round(a / b, 4)
-    except Exception:
-        return None
-
-
-def get_recent_accounts_filings(company_number, limit=3):
+def get_recent_accounts(company_number):
     filing = ch_get_json(f"/company/{company_number}/filing-history")
-    results = []
 
+    accounts = []
     for item in filing.get("items", []):
         if item.get("type") == "AA":
-            results.append(item)
-        if len(results) >= limit:
+            accounts.append({
+                "date": item.get("date"),
+                "made_up_to": item.get("description_values", {}).get("made_up_date"),
+                "document_metadata": item.get("links", {}).get("document_metadata")
+            })
+        if len(accounts) == 3:
             break
 
-    return results
-
-
-def get_recent_accounts_metadata(company_number, limit=3):
-    filings = get_recent_accounts_filings(company_number, limit=limit)
-    results = []
-
-    for filing in filings:
-        meta_url = filing.get("links", {}).get("document_metadata")
-        if not meta_url:
-            continue
-
-        meta = ch_get_json(meta_url)
-        results.append({
-            "filing_date": filing.get("date"),
-            "made_up_to": filing.get("description_values", {}).get("made_up_date"),
-            "document_metadata_url": meta_url,
-            "document_content_url": meta_url + "/content",
-            "metadata": meta
-        })
-
-    return results
-
-
-def get_recent_accounts_text(company_number, limit=3):
-    accounts = get_recent_accounts_metadata(company_number, limit=limit)
-    results = []
-
-    for account in accounts:
-        metadata = account.get("metadata", {})
-        resources = metadata.get("resources", {})
-        content_url = account.get("document_content_url")
-
-        text_content = None
-        content_type_used = None
-        extraction_method = None
-
-        if "application/xhtml+xml" in resources:
-            raw = ch_get_text(content_url, accept="application/xhtml+xml")
-            text_content = clean_xhtml_to_text(raw)
-            content_type_used = "application/xhtml+xml"
-            extraction_method = "xhtml"
-
-        elif "application/xml" in resources:
-            raw = ch_get_text(content_url, accept="application/xml")
-            text_content = clean_xhtml_to_text(raw)
-            content_type_used = "application/xml"
-            extraction_method = "xml"
-
-        elif "application/pdf" in resources:
-            pdf_bytes = ch_get_bytes(content_url, accept="application/pdf")
-            text_content = extract_text_from_pdf_bytes(pdf_bytes, max_pages=12)
-            content_type_used = "application/pdf"
-            extraction_method = "pdf-text"
-
-        results.append({
-            "made_up_to": account.get("made_up_to"),
-            "filing_date": account.get("filing_date"),
-            "document_metadata_url": account.get("document_metadata_url"),
-            "document_content_url": content_url,
-            "content_type_used": content_type_used,
-            "extraction_method": extraction_method,
-            "text": text_content
-        })
-
-    return results
-
-
-def extract_latest_accounts_financials(text):
-    if not text:
-        return {}
-
-    text = text[:80000]
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-    def find_value(label_patterns, lookahead=3):
-        for i, line in enumerate(lines):
-            for pattern in label_patterns:
-                if re.search(pattern, line, flags=re.IGNORECASE):
-                    # same line
-                    same_line_match = re.search(r"([\d,.\-\(\)]+)$", line)
-                    if same_line_match:
-                        return parse_number(same_line_match.group(1))
-
-                    # next few lines
-                    for j in range(1, lookahead + 1):
-                        if i + j < len(lines):
-                            next_line = lines[i + j]
-                            next_match = re.search(r"([\d,.\-\(\)]+)", next_line)
-                            if next_match:
-                                return parse_number(next_match.group(1))
-        return None
-
-    fixed_assets = find_value([
-        r"fixed assets",
-        r"tangible assets",
-        r"total fixed assets",
-        r"property,\s*plant.*equipment"
-    ])
-
-    debtors = find_value([
-        r"debtors",
-        r"trade debtors"
-    ])
-
-    cash = find_value([
-        r"cash at bank and in hand",
-        r"cash at bank",
-        r"cash and cash equivalents",
-        r"cash"
-    ])
-
-    current_assets = find_value([
-        r"current assets",
-        r"total current assets"
-    ])
-
-    current_liabilities = find_value([
-        r"creditors.*within one year",
-        r"current liabilities",
-        r"total current liabilities"
-    ])
-
-    working_capital = find_value([
-        r"working capital"
-    ])
-
-    net_assets = find_value([
-        r"net assets",
-        r"total net assets"
-    ])
-
-    shareholders_funds = find_value([
-        r"shareholders'? funds",
-        r"total shareholders'? funds",
-        r"equity"
-    ])
-
-    long_term_liabilities = find_value([
-        r"creditors.*after more than one year",
-        r"long term liabilities",
-        r"total long term liabilities"
-    ])
-
-    current_ratio = find_value([
-        r"current ratio"
-    ])
-
-    acid_test = find_value([
-        r"acid test"
-    ])
-
-    borrowing_ratio = find_value([
-        r"borrowing ratio %"
-    ])
-
-    equity_gearing = find_value([
-        r"equity gearing %"
-    ])
-
-    debt_gearing = find_value([
-        r"debt gearing %"
-    ])
-
-    depreciation = find_value([
-        r"depreciation charges"
-    ])
-
-    employees = find_value([
-        r"number of employees"
-    ])
-
-    # derived fallbacks
-    if working_capital is None and current_assets is not None and current_liabilities is not None:
-        working_capital = current_assets - current_liabilities
-
-    if current_ratio is None and current_assets is not None and current_liabilities not in [None, 0]:
-        current_ratio = round(current_assets / current_liabilities, 2)
-
-    if shareholders_funds is None and net_assets is not None:
-        shareholders_funds = net_assets
-
-    return {
-        "fixed_assets": fixed_assets,
-        "debtors": debtors,
-        "cash": cash,
-        "current_assets": current_assets,
-        "current_liabilities": current_liabilities,
-        "working_capital": working_capital,
-        "net_assets": net_assets,
-        "shareholders_funds": shareholders_funds,
-        "long_term_liabilities": long_term_liabilities,
-        "current_ratio": current_ratio,
-        "acid_test": acid_test,
-        "borrowing_ratio": borrowing_ratio,
-        "equity_gearing": equity_gearing,
-        "debt_gearing": debt_gearing,
-        "depreciation": depreciation,
-        "employees": employees
-    }
-
-
-def get_latest_accounts_financials(company_number):
-    accounts = get_recent_accounts_text(company_number, limit=1)
-    if not accounts:
-        return None
-
-    account = accounts[0]
-    text = account.get("text")
-    extracted = extract_latest_accounts_financials(text) if text else {}
-
-    return {
-        "made_up_to": account.get("made_up_to"),
-        "filing_date": account.get("filing_date"),
-        "content_type_used": account.get("content_type_used"),
-        "extraction_method": account.get("extraction_method"),
-        "document_metadata_url": account.get("document_metadata_url"),
-        "document_content_url": account.get("document_content_url"),
-        "text_found": bool(text),
-        **extracted
-    }
+    return accounts
 
 
 @app.route("/")
 def home():
-    return {"status": "ok", "message": "Rix Credit API is live"}
+    return {"status": "ok"}
 
 
 @app.route("/health")
@@ -377,26 +63,8 @@ def get_company(company_number):
             "pscs": ch_get_json(f"/company/{company_number}/persons-with-significant-control"),
             "charges": ch_get_json(f"/company/{company_number}/charges"),
             "filing_history": ch_get_json(f"/company/{company_number}/filing-history"),
-            "recent_accounts": get_recent_accounts_metadata(company_number, limit=3)
+            "recent_accounts": get_recent_accounts(company_number)
         })
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-
-@app.route("/rix-credit/company/<company_number>/recent-accounts-metadata")
-def recent_accounts_metadata(company_number):
-    try:
-        data = get_recent_accounts_metadata(company_number, limit=3)
-        return jsonify({"recent_accounts": data})
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-
-@app.route("/rix-credit/company/<company_number>/recent-accounts-text")
-def recent_accounts_text(company_number):
-    try:
-        data = get_recent_accounts_text(company_number, limit=3)
-        return jsonify({"accounts_text": data})
     except Exception as e:
         return {"error": str(e)}, 500
 
@@ -404,7 +72,19 @@ def recent_accounts_text(company_number):
 @app.route("/rix-credit/company/<company_number>/latest-accounts-financials")
 def latest_accounts_financials(company_number):
     try:
-        data = get_latest_accounts_financials(company_number)
-        return jsonify({"latest_accounts_financials": data})
+        accounts = get_recent_accounts(company_number)
+        if not accounts:
+            return jsonify({"latest_accounts_financials": None})
+
+        latest = accounts[0]
+
+        return jsonify({
+            "latest_accounts_financials": {
+                "made_up_to": latest["made_up_to"],
+                "filing_date": latest["date"],
+                "note": "Financial extraction disabled for stability - use PDF manually if needed"
+            }
+        })
+
     except Exception as e:
         return {"error": str(e)}, 500
