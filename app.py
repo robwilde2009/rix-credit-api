@@ -157,97 +157,45 @@ def extract_accounts_financials_from_text(text):
     if not text:
         return {}
 
+    # Limit text size to reduce risk of hanging on large filings
+    text = text[:50000]
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     def find_value(patterns):
         for pattern in patterns:
             for line in lines:
-                match = re.search(pattern, line, flags=re.IGNORECASE)
-                if match:
-                    return parse_number(match.group(1))
+                try:
+                    match = re.search(pattern, line, flags=re.IGNORECASE)
+                    if match:
+                        return parse_number(match.group(1))
+                except Exception:
+                    continue
         return None
 
     return {
         "tangible_assets": find_value([
             r"Fixed assets\s+([\d,.\-\(\)]+)",
-            r"Tangible assets\s+([\d,.\-\(\)]+)",
-            r"Property.*equipment\s+([\d,.\-\(\)]+)",
-            r"Property, plant and equipment\s+([\d,.\-\(\)]+)",
-            r"Total fixed assets\s+([\d,.\-\(\)]+)"
+            r"Tangible assets\s+([\d,.\-\(\)]+)"
         ]),
-
         "debtors": find_value([
-            r"Debtors\s+([\d,.\-\(\)]+)",
-            r"Trade debtors\s+([\d,.\-\(\)]+)"
+            r"Debtors\s+([\d,.\-\(\)]+)"
         ]),
-
         "cash": find_value([
-            r"Cash at bank\s+([\d,.\-\(\)]+)",
-            r"Cash at bank and in hand\s+([\d,.\-\(\)]+)",
-            r"Cash\s+([\d,.\-\(\)]+)"
+            r"Cash.*([\d,.\-\(\)]+)"
         ]),
-
         "total_current_assets": find_value([
-            r"Current assets\s+([\d,.\-\(\)]+)",
-            r"Total current assets\s+([\d,.\-\(\)]+)"
+            r"Current assets\s+([\d,.\-\(\)]+)"
         ]),
-
         "total_current_liabilities": find_value([
-            r"Creditors[: ]+amounts falling due within one year\s+([\d,.\-\(\)]+)",
             r"Creditors.*within one year\s+([\d,.\-\(\)]+)",
-            r"Current liabilities\s+([\d,.\-\(\)]+)",
-            r"Total current liabilities\s+([\d,.\-\(\)]+)"
+            r"Current liabilities\s+([\d,.\-\(\)]+)"
         ]),
-
-        "working_capital": find_value([
-            r"Working capital\s+([\d,.\-\(\)]+)"
-        ]),
-
         "total_net_assets": find_value([
-            r"Net assets\s+([\d,.\-\(\)]+)",
-            r"Total net assets\s+([\d,.\-\(\)]+)"
+            r"Net assets\s+([\d,.\-\(\)]+)"
         ]),
-
         "shareholders_funds": find_value([
-            r"Total shareholders'? funds\s+([\d,.\-\(\)]+)",
-            r"Shareholders'? funds\s+([\d,.\-\(\)]+)",
-            r"Equity\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "total_long_term_liabilities": find_value([
-            r"Creditors[: ]+amounts falling due after more than one year\s+([\d,.\-\(\)]+)",
-            r"Creditors.*after more than one year\s+([\d,.\-\(\)]+)",
-            r"Long term liabilities\s+([\d,.\-\(\)]+)",
-            r"Total long term liabilities\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "current_ratio": find_value([
-            r"Current ratio\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "acid_test": find_value([
-            r"Acid test\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "borrowing_ratio": find_value([
-            r"Borrowing ratio %\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "equity_gearing": find_value([
-            r"Equity gearing %\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "debt_gearing": find_value([
-            r"Debt gearing %\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "depreciation": find_value([
-            r"Depreciation charges\s+([\d,.\-\(\)]+)"
-        ]),
-
-        "employees": find_value([
-            r"Number of employees\s+([\d,.\-\(\)]+)",
-            r"employees\s+([\d,.\-\(\)]+)"
+            r"Shareholders'? funds\s+([\d,.\-\(\)]+)"
         ])
     }
 
