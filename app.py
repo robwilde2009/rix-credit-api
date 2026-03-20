@@ -3,6 +3,8 @@ import requests
 from requests.auth import HTTPBasicAuth
 import os
 import re
+import io
+import pdfplumber
 
 app = Flask(__name__)
 
@@ -37,6 +39,22 @@ def ch_get_text(url, accept=None):
     return r.text
 
 
+def ch_get_bytes(url, accept=None):
+    headers = {}
+    if accept:
+        headers["Accept"] = accept
+
+    r = requests.get(
+        url,
+        auth=HTTPBasicAuth(CH_API_KEY, ""),
+        headers=headers,
+        timeout=60,
+        allow_redirects=True
+    )
+    r.raise_for_status()
+    return r.content
+
+
 def clean_xhtml_to_text(xhtml):
     text = re.sub(r"<script.*?</script>", " ", xhtml, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<style.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
@@ -54,6 +72,18 @@ def clean_xhtml_to_text(xhtml):
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
+
+
+def extract_text_from_pdf_bytes(pdf_bytes, max_pages=15):
+    texts = []
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages[:max_pages]:
+            page_text = page.extract_text()
+            if page_text:
+                texts.append(page_text)
+
+    return "\n\n".join(texts).strip()
 
 
 def parse_number(value):
@@ -138,7 +168,8 @@ def get_recent_accounts_text(company_number, limit=3):
             content_type_used = "application/xml"
 
         elif "application/pdf" in resources:
-            text_content = None
+            pdf_bytes = ch_get_bytes(content_url, accept="application/pdf")
+            text_content = extract_text_from_pdf_bytes(pdf_bytes, max_pages=15)
             content_type_used = "application/pdf"
 
         results.append({
@@ -153,31 +184,26 @@ def get_recent_accounts_text(company_number, limit=3):
     return results
 
 
-# 🔥 NEW SMART EXTRACTION (LOOK-AHEAD LOGIC)
 def extract_latest_accounts_financials(text):
     if not text:
         return {}
 
-    text = text[:40000]
+    text = text[:50000]
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     def find_value(label_patterns):
         for i, line in enumerate(lines):
             for pattern in label_patterns:
                 if re.search(pattern, line, flags=re.IGNORECASE):
-
-                    # Try same line
                     same_line_match = re.search(r"([\d,.\-\(\)]+)$", line)
                     if same_line_match:
                         return parse_number(same_line_match.group(1))
 
-                    # Try next line (critical fix)
                     if i + 1 < len(lines):
                         next_line = lines[i + 1]
                         next_match = re.search(r"([\d,.\-\(\)]+)", next_line)
                         if next_match:
                             return parse_number(next_match.group(1))
-
         return None
 
     return {
@@ -191,25 +217,30 @@ def extract_latest_accounts_financials(text):
             r"trade debtors"
         ]),
         "cash": find_value([
+            r"cash at bank and in hand",
             r"cash at bank",
             r"cash and cash equivalents",
             r"cash"
         ]),
         "current_assets": find_value([
-            r"current assets"
+            r"current assets",
+            r"total current assets"
         ]),
         "current_liabilities": find_value([
             r"creditors.*within one year",
-            r"current liabilities"
+            r"current liabilities",
+            r"total current liabilities"
         ]),
         "working_capital": find_value([
             r"working capital"
         ]),
         "net_assets": find_value([
-            r"net assets"
+            r"net assets",
+            r"total net assets"
         ]),
         "shareholders_funds": find_value([
             r"shareholders'? funds",
+            r"total shareholders'? funds",
             r"equity"
         ]),
         "employees": find_value([
@@ -233,6 +264,7 @@ def get_latest_accounts_financials(company_number):
         "content_type_used": account.get("content_type_used"),
         "document_metadata_url": account.get("document_metadata_url"),
         "document_content_url": account.get("document_content_url"),
+        "text_found": bool(text),
         **extracted
     }
 
