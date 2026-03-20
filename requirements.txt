@@ -2,6 +2,3 @@ flask
 requests
 gunicorn
 pdfplumber
-pdf2image
-pytesseract
-Pillow
