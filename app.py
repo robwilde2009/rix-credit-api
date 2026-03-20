@@ -153,63 +153,67 @@ def get_recent_accounts_text(company_number, limit=3):
     return results
 
 
+# 🔥 NEW SMART EXTRACTION (LOOK-AHEAD LOGIC)
 def extract_latest_accounts_financials(text):
     if not text:
         return {}
 
-    # Keep it light and fast
-    text = text[:30000]
+    text = text[:40000]
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    def find_value(patterns):
-        for pattern in patterns:
-            for line in lines:
-                try:
-                    match = re.search(pattern, line, flags=re.IGNORECASE)
-                    if match:
-                        return parse_number(match.group(1))
-                except Exception:
-                    continue
+    def find_value(label_patterns):
+        for i, line in enumerate(lines):
+            for pattern in label_patterns:
+                if re.search(pattern, line, flags=re.IGNORECASE):
+
+                    # Try same line
+                    same_line_match = re.search(r"([\d,.\-\(\)]+)$", line)
+                    if same_line_match:
+                        return parse_number(same_line_match.group(1))
+
+                    # Try next line (critical fix)
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1]
+                        next_match = re.search(r"([\d,.\-\(\)]+)", next_line)
+                        if next_match:
+                            return parse_number(next_match.group(1))
+
         return None
 
     return {
         "fixed_assets": find_value([
-            r"Fixed assets\s+([\d,.\-\(\)]+)",
-            r"Total fixed assets\s+([\d,.\-\(\)]+)",
-            r"Tangible assets\s+([\d,.\-\(\)]+)"
+            r"fixed assets",
+            r"tangible assets",
+            r"total fixed assets"
         ]),
         "debtors": find_value([
-            r"Debtors\s+([\d,.\-\(\)]+)",
-            r"Trade debtors\s+([\d,.\-\(\)]+)"
+            r"debtors",
+            r"trade debtors"
         ]),
         "cash": find_value([
-            r"Cash at bank and in hand\s+([\d,.\-\(\)]+)",
-            r"Cash at bank\s+([\d,.\-\(\)]+)",
-            r"Cash\s+([\d,.\-\(\)]+)"
+            r"cash at bank",
+            r"cash and cash equivalents",
+            r"cash"
         ]),
         "current_assets": find_value([
-            r"Current assets\s+([\d,.\-\(\)]+)",
-            r"Total current assets\s+([\d,.\-\(\)]+)"
+            r"current assets"
         ]),
         "current_liabilities": find_value([
-            r"Creditors[: ]+amounts falling due within one year\s+([\d,.\-\(\)]+)",
-            r"Creditors.*within one year\s+([\d,.\-\(\)]+)",
-            r"Current liabilities\s+([\d,.\-\(\)]+)",
-            r"Total current liabilities\s+([\d,.\-\(\)]+)"
+            r"creditors.*within one year",
+            r"current liabilities"
         ]),
         "working_capital": find_value([
-            r"Working capital\s+([\d,.\-\(\)]+)"
+            r"working capital"
         ]),
         "net_assets": find_value([
-            r"Net assets\s+([\d,.\-\(\)]+)",
-            r"Total net assets\s+([\d,.\-\(\)]+)"
+            r"net assets"
         ]),
         "shareholders_funds": find_value([
-            r"Shareholders'? funds\s+([\d,.\-\(\)]+)",
-            r"Total shareholders'? funds\s+([\d,.\-\(\)]+)"
+            r"shareholders'? funds",
+            r"equity"
         ]),
         "employees": find_value([
-            r"Number of employees\s+([\d,.\-\(\)]+)"
+            r"number of employees"
         ])
     }
 
