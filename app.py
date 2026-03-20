@@ -4,11 +4,7 @@ from requests.auth import HTTPBasicAuth
 import os
 import re
 import io
-import tempfile
-
 import pdfplumber
-from pdf2image import convert_from_bytes
-import pytesseract
 
 app = Flask(__name__)
 
@@ -78,7 +74,7 @@ def clean_xhtml_to_text(xhtml):
     return text.strip()
 
 
-def clean_ocr_text(text):
+def clean_pdf_text(text):
     text = text.replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text)
@@ -92,19 +88,7 @@ def extract_text_from_pdf_bytes(pdf_bytes, max_pages=12):
             page_text = page.extract_text()
             if page_text:
                 texts.append(page_text)
-    return "\n\n".join(texts).strip()
-
-
-def extract_text_from_pdf_ocr(pdf_bytes, max_pages=8, dpi=200):
-    texts = []
-    images = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=1, last_page=max_pages)
-
-    for image in images:
-        text = pytesseract.image_to_string(image)
-        if text:
-            texts.append(text)
-
-    return clean_ocr_text("\n\n".join(texts))
+    return clean_pdf_text("\n\n".join(texts))
 
 
 def parse_number(value):
@@ -128,6 +112,15 @@ def parse_number(value):
         else:
             num = int(value)
         return -num if negative else num
+    except Exception:
+        return None
+
+
+def safe_div(a, b):
+    if a is None or b in [None, 0]:
+        return None
+    try:
+        return round(a / b, 4)
     except Exception:
         return None
 
@@ -166,7 +159,7 @@ def get_recent_accounts_metadata(company_number, limit=3):
     return results
 
 
-def get_recent_accounts_text(company_number, limit=3, use_ocr_fallback=False):
+def get_recent_accounts_text(company_number, limit=3):
     accounts = get_recent_accounts_metadata(company_number, limit=limit)
     results = []
 
@@ -197,10 +190,6 @@ def get_recent_accounts_text(company_number, limit=3, use_ocr_fallback=False):
             content_type_used = "application/pdf"
             extraction_method = "pdf-text"
 
-            if use_ocr_fallback and not text_content:
-                text_content = extract_text_from_pdf_ocr(pdf_bytes, max_pages=8, dpi=200)
-                extraction_method = "pdf-ocr"
-
         results.append({
             "made_up_to": account.get("made_up_to"),
             "filing_date": account.get("filing_date"),
@@ -218,69 +207,138 @@ def extract_latest_accounts_financials(text):
     if not text:
         return {}
 
-    text = text[:60000]
+    text = text[:80000]
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    def find_value(label_patterns):
+    def find_value(label_patterns, lookahead=3):
         for i, line in enumerate(lines):
             for pattern in label_patterns:
                 if re.search(pattern, line, flags=re.IGNORECASE):
+                    # same line
                     same_line_match = re.search(r"([\d,.\-\(\)]+)$", line)
                     if same_line_match:
                         return parse_number(same_line_match.group(1))
 
-                    if i + 1 < len(lines):
-                        next_line = lines[i + 1]
-                        next_match = re.search(r"([\d,.\-\(\)]+)", next_line)
-                        if next_match:
-                            return parse_number(next_match.group(1))
+                    # next few lines
+                    for j in range(1, lookahead + 1):
+                        if i + j < len(lines):
+                            next_line = lines[i + j]
+                            next_match = re.search(r"([\d,.\-\(\)]+)", next_line)
+                            if next_match:
+                                return parse_number(next_match.group(1))
         return None
 
+    fixed_assets = find_value([
+        r"fixed assets",
+        r"tangible assets",
+        r"total fixed assets",
+        r"property,\s*plant.*equipment"
+    ])
+
+    debtors = find_value([
+        r"debtors",
+        r"trade debtors"
+    ])
+
+    cash = find_value([
+        r"cash at bank and in hand",
+        r"cash at bank",
+        r"cash and cash equivalents",
+        r"cash"
+    ])
+
+    current_assets = find_value([
+        r"current assets",
+        r"total current assets"
+    ])
+
+    current_liabilities = find_value([
+        r"creditors.*within one year",
+        r"current liabilities",
+        r"total current liabilities"
+    ])
+
+    working_capital = find_value([
+        r"working capital"
+    ])
+
+    net_assets = find_value([
+        r"net assets",
+        r"total net assets"
+    ])
+
+    shareholders_funds = find_value([
+        r"shareholders'? funds",
+        r"total shareholders'? funds",
+        r"equity"
+    ])
+
+    long_term_liabilities = find_value([
+        r"creditors.*after more than one year",
+        r"long term liabilities",
+        r"total long term liabilities"
+    ])
+
+    current_ratio = find_value([
+        r"current ratio"
+    ])
+
+    acid_test = find_value([
+        r"acid test"
+    ])
+
+    borrowing_ratio = find_value([
+        r"borrowing ratio %"
+    ])
+
+    equity_gearing = find_value([
+        r"equity gearing %"
+    ])
+
+    debt_gearing = find_value([
+        r"debt gearing %"
+    ])
+
+    depreciation = find_value([
+        r"depreciation charges"
+    ])
+
+    employees = find_value([
+        r"number of employees"
+    ])
+
+    # derived fallbacks
+    if working_capital is None and current_assets is not None and current_liabilities is not None:
+        working_capital = current_assets - current_liabilities
+
+    if current_ratio is None and current_assets is not None and current_liabilities not in [None, 0]:
+        current_ratio = round(current_assets / current_liabilities, 2)
+
+    if shareholders_funds is None and net_assets is not None:
+        shareholders_funds = net_assets
+
     return {
-        "fixed_assets": find_value([
-            r"fixed assets",
-            r"tangible assets",
-            r"total fixed assets"
-        ]),
-        "debtors": find_value([
-            r"debtors",
-            r"trade debtors"
-        ]),
-        "cash": find_value([
-            r"cash at bank and in hand",
-            r"cash at bank",
-            r"cash and cash equivalents",
-            r"cash"
-        ]),
-        "current_assets": find_value([
-            r"current assets",
-            r"total current assets"
-        ]),
-        "current_liabilities": find_value([
-            r"creditors.*within one year",
-            r"current liabilities",
-            r"total current liabilities"
-        ]),
-        "working_capital": find_value([
-            r"working capital"
-        ]),
-        "net_assets": find_value([
-            r"net assets",
-            r"total net assets"
-        ]),
-        "shareholders_funds": find_value([
-            r"shareholders'? funds",
-            r"total shareholders'? funds",
-            r"equity"
-        ]),
-        "employees": find_value([
-            r"number of employees"
-        ])
+        "fixed_assets": fixed_assets,
+        "debtors": debtors,
+        "cash": cash,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "working_capital": working_capital,
+        "net_assets": net_assets,
+        "shareholders_funds": shareholders_funds,
+        "long_term_liabilities": long_term_liabilities,
+        "current_ratio": current_ratio,
+        "acid_test": acid_test,
+        "borrowing_ratio": borrowing_ratio,
+        "equity_gearing": equity_gearing,
+        "debt_gearing": debt_gearing,
+        "depreciation": depreciation,
+        "employees": employees
     }
 
 
-def get_latest_accounts_financials(company_number, use_ocr_fallback=False):
-    accounts = get_recent_accounts_text(company_number, limit=1, use_ocr_fallback=use_ocr_fallback)
+def get_latest_accounts_financials(company_number):
+    accounts = get_recent_accounts_text(company_number, limit=1)
     if not accounts:
         return None
 
@@ -337,7 +395,7 @@ def recent_accounts_metadata(company_number):
 @app.route("/rix-credit/company/<company_number>/recent-accounts-text")
 def recent_accounts_text(company_number):
     try:
-        data = get_recent_accounts_text(company_number, limit=3, use_ocr_fallback=False)
+        data = get_recent_accounts_text(company_number, limit=3)
         return jsonify({"accounts_text": data})
     except Exception as e:
         return {"error": str(e)}, 500
@@ -346,16 +404,7 @@ def recent_accounts_text(company_number):
 @app.route("/rix-credit/company/<company_number>/latest-accounts-financials")
 def latest_accounts_financials(company_number):
     try:
-        data = get_latest_accounts_financials(company_number, use_ocr_fallback=False)
-        return jsonify({"latest_accounts_financials": data})
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-
-@app.route("/rix-credit/company/<company_number>/latest-accounts-financials-ocr")
-def latest_accounts_financials_ocr(company_number):
-    try:
-        data = get_latest_accounts_financials(company_number, use_ocr_fallback=True)
+        data = get_latest_accounts_financials(company_number)
         return jsonify({"latest_accounts_financials": data})
     except Exception as e:
         return {"error": str(e)}, 500
