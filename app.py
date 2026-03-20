@@ -28,29 +28,38 @@ def ch_get_raw(url, accept=None, allow_redirects=True):
     r.raise_for_status()
     return r
 
-def get_latest_accounts_filing(company_number):
+def get_recent_accounts_filings(company_number, limit=3):
     filing = ch_get_json(f"/company/{company_number}/filing-history")
+    results = []
+
     for item in filing.get("items", []):
         if item.get("type") == "AA":
-            return item
-    return None
+            results.append(item)
+        if len(results) >= limit:
+            break
 
-def get_latest_accounts_metadata(company_number):
-    latest = get_latest_accounts_filing(company_number)
-    if not latest:
-        return None
+    return results
 
-    meta_url = latest.get("links", {}).get("document_metadata")
-    if not meta_url:
-        return None
+def get_recent_accounts_metadata(company_number, limit=3):
+    filings = get_recent_accounts_filings(company_number, limit=limit)
+    results = []
 
-    meta = ch_get_json(meta_url)
-    return {
-        "filing": latest,
-        "metadata": meta,
-        "document_metadata_url": meta_url,
-        "document_content_url": meta_url + "/content"
-    }
+    for filing in filings:
+        meta_url = filing.get("links", {}).get("document_metadata")
+        if not meta_url:
+            continue
+
+        meta = ch_get_json(meta_url)
+        results.append({
+            "filing_date": filing.get("date"),
+            "made_up_to": filing.get("description_values", {}).get("made_up_date"),
+            "filing": filing,
+            "metadata": meta,
+            "document_metadata_url": meta_url,
+            "document_content_url": meta_url + "/content"
+        })
+
+    return results
 
 @app.route("/")
 def home():
@@ -68,7 +77,7 @@ def get_company(company_number):
         pscs = ch_get_json(f"/company/{company_number}/persons-with-significant-control")
         charges = ch_get_json(f"/company/{company_number}/charges")
         filing_history = ch_get_json(f"/company/{company_number}/filing-history")
-        latest_accounts = get_latest_accounts_metadata(company_number)
+        recent_accounts = get_recent_accounts_metadata(company_number, limit=3)
 
         return jsonify({
             "company_profile": company_profile,
@@ -76,45 +85,44 @@ def get_company(company_number):
             "pscs": pscs,
             "charges": charges,
             "filing_history": filing_history,
-            "latest_accounts": latest_accounts
+            "recent_accounts": recent_accounts
         })
     except Exception as e:
         return {"error": str(e)}, 500
 
-@app.route("/rix-credit/company/<company_number>/latest-accounts-metadata")
-def latest_accounts_metadata(company_number):
+@app.route("/rix-credit/company/<company_number>/recent-accounts-metadata")
+def recent_accounts_metadata(company_number):
     try:
-        data = get_latest_accounts_metadata(company_number)
+        data = get_recent_accounts_metadata(company_number, limit=3)
         if not data:
-            return {"error": "No accounts filing found"}, 404
-        return jsonify(data)
+            return {"error": "No accounts filings found"}, 404
+        return jsonify({"recent_accounts": data})
     except Exception as e:
         return {"error": str(e)}, 500
 
-@app.route("/rix-credit/company/<company_number>/latest-accounts.pdf")
-def latest_accounts_pdf(company_number):
+@app.route("/rix-credit/company/<company_number>/accounts/<int:index>.pdf")
+def accounts_pdf(company_number, index):
     try:
-        data = get_latest_accounts_metadata(company_number)
-        if not data:
-            return {"error": "No accounts filing found"}, 404
+        accounts = get_recent_accounts_metadata(company_number, limit=3)
 
-        meta = data["metadata"]
+        if index < 1 or index > len(accounts):
+            return {"error": "Accounts index out of range"}, 404
+
+        selected = accounts[index - 1]
+        meta = selected["metadata"]
         resources = meta.get("resources", {})
 
         if "application/pdf" not in resources:
             return {"error": "PDF not available for this filing"}, 404
 
-        content_url = data["document_content_url"]
-
-        # Request the document content as PDF.
-        # Companies House returns a redirect to the file location.
+        content_url = selected["document_content_url"]
         r = ch_get_raw(content_url, accept="application/pdf", allow_redirects=True)
 
         return Response(
             r.content,
             content_type="application/pdf",
             headers={
-                "Content-Disposition": f'inline; filename="{company_number}-latest-accounts.pdf"'
+                "Content-Disposition": f'inline; filename="{company_number}-accounts-{index}.pdf"'
             }
         )
     except Exception as e:
