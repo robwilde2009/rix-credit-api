@@ -30,7 +30,7 @@ def ch_get_text(url, accept=None):
         url,
         auth=HTTPBasicAuth(CH_API_KEY, ""),
         headers=headers,
-        timeout=60,
+        timeout=45,
         allow_redirects=True
     )
     r.raise_for_status()
@@ -153,11 +153,12 @@ def get_recent_accounts_text(company_number, limit=3):
     return results
 
 
-def extract_accounts_financials_from_text(text):
+def extract_latest_accounts_financials(text):
     if not text:
         return {}
 
-    text = text[:50000]
+    # Keep it light and fast
+    text = text[:30000]
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     def find_value(patterns):
@@ -196,6 +197,9 @@ def extract_accounts_financials_from_text(text):
             r"Current liabilities\s+([\d,.\-\(\)]+)",
             r"Total current liabilities\s+([\d,.\-\(\)]+)"
         ]),
+        "working_capital": find_value([
+            r"Working capital\s+([\d,.\-\(\)]+)"
+        ]),
         "net_assets": find_value([
             r"Net assets\s+([\d,.\-\(\)]+)",
             r"Total net assets\s+([\d,.\-\(\)]+)"
@@ -204,61 +208,20 @@ def extract_accounts_financials_from_text(text):
             r"Shareholders'? funds\s+([\d,.\-\(\)]+)",
             r"Total shareholders'? funds\s+([\d,.\-\(\)]+)"
         ]),
-        "working_capital": find_value([
-            r"Working capital\s+([\d,.\-\(\)]+)"
-        ]),
-        "long_term_liabilities": find_value([
-            r"Creditors[: ]+amounts falling due after more than one year\s+([\d,.\-\(\)]+)",
-            r"Creditors.*after more than one year\s+([\d,.\-\(\)]+)",
-            r"Long term liabilities\s+([\d,.\-\(\)]+)",
-            r"Total long term liabilities\s+([\d,.\-\(\)]+)"
-        ]),
-        "current_ratio": find_value([
-            r"Current ratio\s+([\d,.\-\(\)]+)"
-        ]),
-        "acid_test": find_value([
-            r"Acid test\s+([\d,.\-\(\)]+)"
-        ]),
-        "borrowing_ratio": find_value([
-            r"Borrowing ratio %\s+([\d,.\-\(\)]+)"
-        ]),
-        "equity_gearing": find_value([
-            r"Equity gearing %\s+([\d,.\-\(\)]+)"
-        ]),
-        "debt_gearing": find_value([
-            r"Debt gearing %\s+([\d,.\-\(\)]+)"
-        ]),
-        "depreciation": find_value([
-            r"Depreciation charges\s+([\d,.\-\(\)]+)"
-        ]),
         "employees": find_value([
-            r"Number of employees\s+([\d,.\-\(\)]+)",
-            r"employees\s+([\d,.\-\(\)]+)"
+            r"Number of employees\s+([\d,.\-\(\)]+)"
         ])
     }
 
 
-def get_latest_accounts_metadata(company_number):
-    accounts = get_recent_accounts_metadata(company_number, limit=1)
-    if not accounts:
-        return None
-    return accounts[0]
-
-
-def get_latest_accounts_text(company_number):
+def get_latest_accounts_financials(company_number):
     accounts = get_recent_accounts_text(company_number, limit=1)
     if not accounts:
         return None
-    return accounts[0]
 
-
-def get_latest_accounts_financials(company_number):
-    account = get_latest_accounts_text(company_number)
-    if not account:
-        return None
-
+    account = accounts[0]
     text = account.get("text")
-    extracted = extract_accounts_financials_from_text(text) if text else {}
+    extracted = extract_latest_accounts_financials(text) if text else {}
 
     return {
         "made_up_to": account.get("made_up_to"),
