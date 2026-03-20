@@ -16,6 +16,19 @@ def ch_get(endpoint):
     response.raise_for_status()
     return response.json()
 
+@app.route("/")
+def home():
+    return {
+        "status": "ok",
+        "message": "Rix Credit API is live"
+    }
+
+@app.route("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+
 @app.route("/rix-credit/company/<company_number>")
 def get_company(company_number):
     try:
