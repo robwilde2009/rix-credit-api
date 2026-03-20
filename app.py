@@ -4,7 +4,11 @@ from requests.auth import HTTPBasicAuth
 import os
 import re
 import io
+import tempfile
+
 import pdfplumber
+from pdf2image import convert_from_bytes
+import pytesseract
 
 app = Flask(__name__)
 
@@ -74,16 +78,33 @@ def clean_xhtml_to_text(xhtml):
     return text.strip()
 
 
-def extract_text_from_pdf_bytes(pdf_bytes, max_pages=15):
-    texts = []
+def clean_ocr_text(text):
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
 
+
+def extract_text_from_pdf_bytes(pdf_bytes, max_pages=12):
+    texts = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages[:max_pages]:
             page_text = page.extract_text()
             if page_text:
                 texts.append(page_text)
-
     return "\n\n".join(texts).strip()
+
+
+def extract_text_from_pdf_ocr(pdf_bytes, max_pages=8, dpi=200):
+    texts = []
+    images = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=1, last_page=max_pages)
+
+    for image in images:
+        text = pytesseract.image_to_string(image)
+        if text:
+            texts.append(text)
+
+    return clean_ocr_text("\n\n".join(texts))
 
 
 def parse_number(value):
@@ -145,7 +166,7 @@ def get_recent_accounts_metadata(company_number, limit=3):
     return results
 
 
-def get_recent_accounts_text(company_number, limit=3):
+def get_recent_accounts_text(company_number, limit=3, use_ocr_fallback=False):
     accounts = get_recent_accounts_metadata(company_number, limit=limit)
     results = []
 
@@ -156,21 +177,29 @@ def get_recent_accounts_text(company_number, limit=3):
 
         text_content = None
         content_type_used = None
+        extraction_method = None
 
         if "application/xhtml+xml" in resources:
             raw = ch_get_text(content_url, accept="application/xhtml+xml")
             text_content = clean_xhtml_to_text(raw)
             content_type_used = "application/xhtml+xml"
+            extraction_method = "xhtml"
 
         elif "application/xml" in resources:
             raw = ch_get_text(content_url, accept="application/xml")
             text_content = clean_xhtml_to_text(raw)
             content_type_used = "application/xml"
+            extraction_method = "xml"
 
         elif "application/pdf" in resources:
             pdf_bytes = ch_get_bytes(content_url, accept="application/pdf")
-            text_content = extract_text_from_pdf_bytes(pdf_bytes, max_pages=15)
+            text_content = extract_text_from_pdf_bytes(pdf_bytes, max_pages=12)
             content_type_used = "application/pdf"
+            extraction_method = "pdf-text"
+
+            if use_ocr_fallback and not text_content:
+                text_content = extract_text_from_pdf_ocr(pdf_bytes, max_pages=8, dpi=200)
+                extraction_method = "pdf-ocr"
 
         results.append({
             "made_up_to": account.get("made_up_to"),
@@ -178,6 +207,7 @@ def get_recent_accounts_text(company_number, limit=3):
             "document_metadata_url": account.get("document_metadata_url"),
             "document_content_url": content_url,
             "content_type_used": content_type_used,
+            "extraction_method": extraction_method,
             "text": text_content
         })
 
@@ -188,7 +218,7 @@ def extract_latest_accounts_financials(text):
     if not text:
         return {}
 
-    text = text[:50000]
+    text = text[:60000]
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     def find_value(label_patterns):
@@ -249,8 +279,8 @@ def extract_latest_accounts_financials(text):
     }
 
 
-def get_latest_accounts_financials(company_number):
-    accounts = get_recent_accounts_text(company_number, limit=1)
+def get_latest_accounts_financials(company_number, use_ocr_fallback=False):
+    accounts = get_recent_accounts_text(company_number, limit=1, use_ocr_fallback=use_ocr_fallback)
     if not accounts:
         return None
 
@@ -262,6 +292,7 @@ def get_latest_accounts_financials(company_number):
         "made_up_to": account.get("made_up_to"),
         "filing_date": account.get("filing_date"),
         "content_type_used": account.get("content_type_used"),
+        "extraction_method": account.get("extraction_method"),
         "document_metadata_url": account.get("document_metadata_url"),
         "document_content_url": account.get("document_content_url"),
         "text_found": bool(text),
@@ -306,7 +337,7 @@ def recent_accounts_metadata(company_number):
 @app.route("/rix-credit/company/<company_number>/recent-accounts-text")
 def recent_accounts_text(company_number):
     try:
-        data = get_recent_accounts_text(company_number, limit=3)
+        data = get_recent_accounts_text(company_number, limit=3, use_ocr_fallback=False)
         return jsonify({"accounts_text": data})
     except Exception as e:
         return {"error": str(e)}, 500
@@ -315,7 +346,16 @@ def recent_accounts_text(company_number):
 @app.route("/rix-credit/company/<company_number>/latest-accounts-financials")
 def latest_accounts_financials(company_number):
     try:
-        data = get_latest_accounts_financials(company_number)
+        data = get_latest_accounts_financials(company_number, use_ocr_fallback=False)
+        return jsonify({"latest_accounts_financials": data})
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.route("/rix-credit/company/<company_number>/latest-accounts-financials-ocr")
+def latest_accounts_financials_ocr(company_number):
+    try:
+        data = get_latest_accounts_financials(company_number, use_ocr_fallback=True)
         return jsonify({"latest_accounts_financials": data})
     except Exception as e:
         return {"error": str(e)}, 500
